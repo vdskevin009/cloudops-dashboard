@@ -1,0 +1,39 @@
+@inject BrowserStore Store
+<div class="notice"><span class="badge warn">SIMULATION ONLY</span> Synthetic data. Every control changes this browser's demo state only. No Azure account or infrastructure is connected.</div>
+@if (error != "") { <p class="error" role="alert">@error</p> }
+<section class="stats">
+<div class="stat"><small>ACTIVE REGION</small><strong>@ops.ActiveRegion</strong><small>@(ops.ActiveRegion == "Prod" ? "West Europe · demo" : "North Europe · demo")</small></div>
+<div class="stat"><small>HEALTHY SERVICES</small><strong>@Healthy / 3</strong><small>Last synthetic check: @lastCheck</small></div>
+<div class="stat"><small>OPEN INCIDENTS</small><strong>@ops.Incidents.Count(x=>x.Status != "Resolved")</strong><small>Track your response lifecycle</small></div>
+</section>
+<div class="tabs">@foreach(var name in new[]{"Overview","Incidents","Deployments","Logs"}) { <button class="@(tab==name ? "active" : "")" @onclick="()=>tab=name">@name</button> }</div>
+@if(tab=="Overview") {
+<div class="grid"><div><section class="card"><div class="card-head"><h2>Service health / Prod</h2><button class="secondary" @onclick="Check">Run checks</button></div>
+@foreach(var service in ops.Services) { <div class="row"><div class="grow"><strong>@service.Name</strong><small>v1.0.@service.Version · @(service.Healthy ? $"{service.LatencyMs} ms" : "Timeout")</small></div><span class="badge @(service.Healthy ? "" : "bad")">@(service.Healthy ? "Healthy" : "Unavailable")</span><button class="secondary" @onclick="()=>Failure(service)">@(service.Healthy ? "Simulate failure" : "Recover")</button></div> }
+<p class="notice">Prod services keep their own health during failover. DR health is controlled separately below.</p></section>
+<section class="card"><h2>Environment topology</h2><div class="row"><strong>Prod · West Europe</strong><span class="badge">@(ops.ActiveRegion=="Prod" ? "Serving traffic" : "Standby")</span></div><div class="row"><strong>DR · North Europe</strong><span class="badge">@(ops.ActiveRegion=="DR" ? "Serving traffic" : "Standby")</span></div><div class="row"><span>Replication</span><span>@(ops.ReplicationCurrent ? "Current" : "Lagging")</span></div><p class="notice">RPO target: 5 minutes. RTO target: 15 minutes. These are illustrative design targets, not measured guarantees.</p></section></div>
+<div><section class="card tinted"><h2>Practice a recovery</h2><p class="muted">Validate the target, confirm your intent, then move simulated traffic to @(ops.ActiveRegion=="Prod" ? "DR" : "Prod").</p>
+<label class="checkline"><input type="checkbox" @bind="ops.DrHealthy" @bind:after="Save"/>DR region healthy</label><label class="checkline"><input type="checkbox" @bind="ops.ReplicationCurrent" @bind:after="Save"/>Replication is current</label>
+<p class="badge @(ops.CanSwitch ? "" : "warn")">@(ops.CanSwitch ? "Preflight checks passed" : "Switch blocked: check target health / replication")</p>
+<label>Type SWITCH to confirm<input @bind="confirmation" placeholder="SWITCH" autocomplete="off" /></label><button style="margin-top:14px" disabled="@(!ops.CanSwitch || confirmation!="SWITCH")" @onclick="Switch">Switch simulated traffic</button></section>
+<section class="card"><h2>Feature flags</h2><label class="checkline"><input type="checkbox" @bind="ops.NewCheckout" @bind:after="Flag"/>New checkout experience</label><p class="notice">Demo flag: @(ops.NewCheckout ? "enabled" : "disabled"). Changes are recorded in the audit log.</p></section></div></div>
+}
+@if(tab=="Incidents") { <section class="card"><h2>Incident response</h2><form class="actions" @onsubmit="AddIncident" @onsubmit:preventDefault><input style="flex:1" aria-label="Incident title" @bind="incidentTitle" required maxlength="150" placeholder="e.g. Elevated error rate on Family API"/><button>Open incident</button></form>
+@if(ops.Incidents.Count==0) { <p class="empty">No incidents recorded. Create one to practice your response.</p> }
+@foreach(var item in ops.Incidents) { <div class="row"><div class="grow"><strong>@item.Title</strong><small>@item.Opened.ToLocalTime().ToString("g")</small></div><span class="badge">@item.Status</span>@if(item.Status!="Resolved") { <button class="secondary" @onclick="()=>Advance(item)">@(item.Status=="Investigating" ? "Start mitigation" : "Resolve")</button> }</div> }</section> }
+@if(tab=="Deployments") { <section class="card"><h2>Deployment workbench</h2><p class="muted">Roll a new demo version to Prod. These deployments do not build or release any real application.</p>@foreach(var service in ops.Services) { <div class="row"><strong>@service.Name</strong><span>v1.0.@service.Version</span><button @onclick="()=>Deploy(service)">Simulate rollout</button></div> }</section><section class="card"><h2>Deployment history</h2>@if(ops.Deployments.Count==0) { <p class="empty">Your simulated rollouts will appear here.</p> }@foreach(var item in ops.Deployments) { <div class="row"><small>@item.At.ToLocalTime().ToString("g")</small><span>@item.Message</span></div> }</section> }
+@if(tab=="Logs") { <section class="card"><div class="card-head"><h2>Audit log</h2><button class="secondary" @onclick="Export">Export JSON</button></div><label>Filter logs<input @bind="search" @bind:event="oninput" placeholder="Service, level, or action"/></label>@foreach(var log in ops.Logs.Where(x=>$"{x.Level} {x.Message}".Contains(search,StringComparison.OrdinalIgnoreCase))) { <div class="row"><div class="grow"><span class="badge">@log.Level</span><small>@log.At.ToLocalTime().ToString("G")</small><p>@log.Message</p></div></div> }@if(ops.Logs.Count==0) { <p class="empty">Run a check or try a simulation to see its audit trail.</p> }</section> }
+@code {
+Operations ops=new(); string tab="Overview", confirmation="", error="", incidentTitle="", search="",lastCheck="not run";
+int Healthy=>ops.ActiveRegion=="Prod" ? ops.Services.Count(x=>x.Healthy) : (ops.DrHealthy ? 3 : 0);
+protected override async Task OnInitializedAsync(){try{ops=await Store.Load<Operations>("cloudops.v1")??new();}catch{error="Saved demo state could not be read. Using a fresh simulation.";}}
+async Task Save(){try{await Store.Save("cloudops.v1",ops);error="";}catch{error="Browser storage is unavailable; this session's changes may not persist.";}}
+async Task Check(){ops.Check();lastCheck=DateTime.Now.ToString("HH:mm:ss");await Save();}
+async Task Failure(DemoService s){ops.ToggleFailure(s);await Save();}
+async Task Switch(){try{ops.Switch(confirmation);confirmation="";await Save();}catch(Exception ex){error=ex.Message;}}
+async Task Flag(){ops.Log("NOTICE",$"Demo checkout flag {(ops.NewCheckout?"enabled":"disabled")}");await Save();}
+async Task Deploy(DemoService s){ops.Deploy(s);await Save();}
+async Task AddIncident(){if(string.IsNullOrWhiteSpace(incidentTitle))return;ops.Incidents.Insert(0,new(){Title=incidentTitle.Trim()});ops.Log("WARN",$"Incident opened: {incidentTitle.Trim()}");incidentTitle="";await Save();}
+async Task Advance(Incident i){i.Status=i.Status=="Investigating"?"Mitigating":"Resolved";ops.Log("NOTICE",$"Incident {i.Title}: {i.Status}");await Save();}
+Task Export()=>Store.Download("cloudops-audit.json",JsonSerializer.Serialize(ops.Logs,new JsonSerializerOptions{WriteIndented=true}));
+}
